@@ -126,6 +126,32 @@ If the query requests a region that SegFormer did not find in an image, that
 axis receives a small negative score of `-0.1` instead of being silently
 ignored. If no valid axes are supplied, retrieval falls back to global mode.
 
+### Design choices and heuristic values
+
+The dataset has no query-level relevance labels, so the numerical values below
+were not optimized against Recall@K, mAP, or another retrieval metric. They are
+transparent engineering heuristics selected for a qualitative comparison and
+should be tuned on a labelled validation set in future work.
+
+| Choice | Current value | Justification |
+|---|---:|---|
+| Indexed regional axes | Upper, lower, background | These regions directly cover the assignment's clothing composition and environment requirements while avoiding unreliable fine-grained accessory masks. |
+| Upper SegFormer labels | 4 and 7 | Class 4 represents upper clothes. Class 7 represents dresses and is assigned to upper as the primary garment representation. |
+| Lower SegFormer labels | 5 and 6 | These classes correspond to skirts and pants, the main lower-garment categories required for compositional queries. |
+| Background label | 0 | This class captures pixels outside the segmented person and clothing, providing scene context. |
+| Mask fill value | 127 | Mid-grey is a neutral fixed replacement that avoids the strong contrast of pure black or white. It is still a heuristic and introduces distribution shift. |
+| Default global weight | 0.5 | Gives equal total weight to global semantics and the mean regional evidence. It is a neutral baseline, not a learned optimum. |
+| Qualitative comparison weight | 0.6 where specified | Slightly favours the robust global representation while allowing regional evidence to affect composition. This value was selected heuristically. |
+| Missing-axis score | -0.1 | Prevents an image with a missing requested region from benefiting simply because that axis was ignored. The mild penalty avoids completely rejecting possible segmentation failures. |
+
+| Search method | Exact cosine search | At approximately 3,200 images, exhaustive matrix scoring is inexpensive and avoids ANN recall trade-offs during the ML comparison. |
+
+The primary semantic choices are the three regional axes and their SegFormer
+class mappings. Batch sizes affect speed and memory only. Retrieval weights,
+the missing-region penalty, crop padding, and mask fill value are the main
+heuristics that should be validated or learned when relevance annotations are
+available.
+
 ### `cluster_index.py`
 
 Provides optional, label-free inspection of the indexed feature spaces. It
