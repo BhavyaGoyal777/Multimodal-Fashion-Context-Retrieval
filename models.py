@@ -25,35 +25,27 @@ MASK_FILL_VALUE = 127
 DEFAULT_PARSER_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
 
 
-class ClipImageEncoder(nn.Module):
-    """Expose FashionCLIP image encoding as a standard forward method."""
-
-    def __init__(self, clip_model):
-        super().__init__()
-        self.clip_model = clip_model
-
-    def forward(self, pixel_values):
-        return self.clip_model.encode_image(pixel_values)
-
-
 class ModelLoader:
     def __init__(self):
         self.device = torch.device(
             "cuda:0" if torch.cuda.is_available() else "cpu"
         )
-        self.gpu_count = torch.cuda.device_count()
+        self.has_cuda = self.device.type == "cuda"
 
-        if self.gpu_count:
-            print(f"Detected {self.gpu_count} CUDA GPU(s):")
-            for gpu_idx in range(self.gpu_count):
-                print(f"  GPU {gpu_idx}: {torch.cuda.get_device_name(gpu_idx)}")
+        if self.has_cuda:
+            available_gpus = torch.cuda.device_count()
+            print(f"Using GPU 0: {torch.cuda.get_device_name(0)}")
+            if available_gpus > 1:
+                print(
+                    f"{available_gpus - 1} additional GPU(s) detected "
+                    "but intentionally not used."
+                )
         else:
             print("No CUDA GPU detected; using CPU.")
 
         self.seg_processor = None
         self.seg_model = None
         self.clip_model = None
-        self.clip_image_encoder = None
         self.clip_preprocess = None
         self.tokenizer = None
         self.parser_model = None
@@ -70,13 +62,6 @@ class ModelLoader:
             .eval()
         )
 
-        if self.gpu_count > 1:
-            self.seg_model = nn.DataParallel(
-                self.seg_model,
-                device_ids=list(range(self.gpu_count)),
-            )
-            print(f"SegFormer distributed across {self.gpu_count} GPUs")
-
         print("SegFormer loaded")
 
     def load_clip_model(self):
@@ -87,15 +72,6 @@ class ModelLoader:
         self.clip_model = self.clip_model.to(self.device).eval()
         self.tokenizer = open_clip.get_tokenizer("hf-hub:Marqo/marqo-fashionCLIP")
 
-        image_encoder = ClipImageEncoder(self.clip_model).to(self.device).eval()
-        if self.gpu_count > 1:
-            image_encoder = nn.DataParallel(
-                image_encoder,
-                device_ids=list(range(self.gpu_count)),
-            )
-            print(f"FashionCLIP image encoder distributed across {self.gpu_count} GPUs")
-
-        self.clip_image_encoder = image_encoder
         print("FashionCLIP loaded")
 
     def load_query_parser(self, model_name=DEFAULT_PARSER_MODEL):
@@ -104,9 +80,9 @@ class ModelLoader:
         self.parser_tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.parser_model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=torch.float16 if self.gpu_count else torch.float32,
-            device_map="auto" if self.gpu_count else None,
-        ).eval()
+            torch_dtype=torch.float16 if self.has_cuda else torch.float32,
+        )
+        self.parser_model = self.parser_model.to(self.device).eval()
         print("Query parser loaded")
 
     def segment_image(self, image):
@@ -128,18 +104,28 @@ class ModelLoader:
         ):
             logits = self.seg_model(**inputs).logits
 
-        # Interpolation on CPU is performed in float32 for compatibility.
-        logits = logits.float().cpu()
+        # Resize the complete logits batch on GPU. Transferring class masks is
+        # substantially cheaper than transferring and resizing 18-channel
+        # logits independently on CPU.
+        processor_size = inputs["pixel_values"].shape[-2:]
+        resized_logits = nn.functional.interpolate(
+            logits,
+            size=processor_size,
+            mode="bilinear",
+            align_corners=False,
+        )
+        batch_masks = resized_logits.argmax(dim=1).to(torch.uint8).cpu().numpy()
 
         masks = []
-        for image, image_logits in zip(images, logits):
-            upsampled = nn.functional.interpolate(
-                image_logits.unsqueeze(0),
-                size=image.size[::-1],
-                mode="bilinear",
-                align_corners=False,
-            )
-            masks.append(upsampled.argmax(dim=1)[0].numpy())
+        for image, mask in zip(images, batch_masks):
+            if mask.shape != image.size[::-1]:
+                mask = np.asarray(
+                    Image.fromarray(mask).resize(
+                        image.size,
+                        resample=Image.Resampling.NEAREST,
+                    )
+                )
+            masks.append(mask)
         return masks
 
     def extract_region_crop(self, image, masks, class_ids, padding_ratio=0.05):
@@ -193,7 +179,7 @@ class ModelLoader:
             dtype=torch.float16,
             enabled=self.device.type == "cuda",
         ):
-            features = self.clip_image_encoder(img_tensor)
+            features = self.clip_model.encode_image(img_tensor)
 
         features = features.float()
         features = features / features.norm(dim=-1, keepdim=True).clamp_min(1e-12)
