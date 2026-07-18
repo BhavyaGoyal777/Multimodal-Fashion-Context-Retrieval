@@ -22,7 +22,7 @@ AXES = {
 }
 
 MASK_FILL_VALUE = 127
-DEFAULT_PARSER_MODEL = "Qwen/Qwen2.5-1.5B-Instruct"
+DEFAULT_PARSER_MODEL = "Qwen/Qwen3.5-2B" #Qwen/Qwen2.5-1.5B-Instruc
 
 
 class ModelLoader:
