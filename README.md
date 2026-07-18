@@ -56,11 +56,7 @@ available through the global representation.
 |-- cluster_index.py          Optional embedding inspection and clustering
 |-- requirements.txt          Python dependencies
 |-- README.md                 Setup, architecture, and usage guide
-`-- report/
-    |-- main.tex              Assignment report source
-    |-- references.bib        BibTeX references
-    `-- results_optimized/    Compressed qualitative result grids used by
-                              the report
+
 ```
 
 ### `models.py`
@@ -77,8 +73,8 @@ Contains the shared ML logic used by indexing and retrieval:
 - Optionally loads a local Hugging Face causal language model and parses a
   query into `upper`, `lower`, and `background` JSON fields.
 
-The default parser is `Qwen/Qwen2.5-1.5B-Instruct`. A different compatible
-model can be selected with `--parser_model`.
+The default parser is `Qwen/Qwen3.5-2B`. A different compatible model can be
+selected with `--parser_model`.
 
 ### `index.py`
 
@@ -364,6 +360,27 @@ binding and scene context.
 - Fixed axis weights are not optimal for every query.
 - Exact search is appropriate for the current dataset but should be replaced
   by ANN candidate retrieval and exact reranking at million-image scale.
+
+
+### Region presence and segmentation uncertainty
+
+A tiny false-positive mask can incorrectly mark an invisible region as
+present. A fixed pixel or full-image area threshold is scale-sensitive when
+the person is small or partially visible. Future work can instead combine the
+largest connected component, area relative to the person box, prediction
+entropy or margin, and a calibrated confidence threshold. Uncertain regions
+should be marked absent so retrieval falls back toward the global score.
+
+### Query-parser errors
+
+The parser can drop attributes, hallucinate details, or swap upper and lower
+bindings, causing the wrong regional index to be searched. The current prompt
+and JSON validation reduce but do not eliminate these errors. A production
+version should fine-tune the parser on labelled fashion queries, validate that
+parsed phrases are grounded in the input, measure per-axis field F1, and fall
+back to global retrieval when the decomposition is uncertain. Manual axes are
+available to evaluate retrieval independently of parser quality.
+  
 
 ## Proposed extension
 
